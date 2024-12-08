@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/internal")
 # このAPIをインスタンス内から一定間隔で叩かせることで、椅子とライドをマッチングさせる
 @router.get("/matching", status_code=HTTPStatus.NO_CONTENT)
 def internal_get_matching() -> None:
+    return
     # MEMO: 一旦最も待たせているリクエストに適当な空いている椅子マッチさせる実装とする。おそらくもっといい方法があるはず…
     with engine.begin() as conn:
         row = conn.execute(

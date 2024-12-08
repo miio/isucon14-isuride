@@ -290,7 +290,7 @@ def app_post_rides(
     ride_id = str(ULID())
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT * FROM rides WHERE user_id = :user_id"), {"user_id": user.id}
+            text("SELECT * FROM rides WHERE user_id = :user_id FOR UPDATE"), {"user_id": user.id}
         ).fetchall()
         rides = [Ride.model_validate(row) for row in rows]
 
@@ -305,19 +305,53 @@ def app_post_rides(
                 status_code=HTTPStatus.CONFLICT, detail="ride already exists"
             )
 
+        while True:
+            matched: Chair | None = None
+            row = conn.execute(
+                text(
+                    "SELECT chairs.* FROM chairs LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active"
+                )
+            ).fetchone()
+            if row is None:
+                continue
+            matched = Chair.model_validate(row)
+     
+            assert matched is not None
+            conn.execute(
+                text(
+                    "SELECT id FROM chairs WHERE id = :chair_id FOR UPDATE"
+                ),
+                {
+                    "chair_id": matched.id,
+                },
+            )
+            break
+
         conn.execute(
             text(
-                "INSERT INTO rides (id, user_id, pickup_latitude, pickup_longitude, destination_latitude, destination_longitude) VALUES (:id, :user_id, :pickup_latitude, :pickup_longitude, :destination_latitude, :destination_longitude)"
+                "INSERT INTO rides (id, user_id, chair_id,  pickup_latitude, pickup_longitude, destination_latitude, destination_longitude) VALUES (:id, :user_id, :chair_id, :pickup_latitude, :pickup_longitude, :destination_latitude, :destination_longitude)"
             ),
             {
                 "id": ride_id,
                 "user_id": user.id,
+                "chair_id": matched.id,
                 "pickup_latitude": req.pickup_coordinate.latitude,
                 "pickup_longitude": req.pickup_coordinate.longitude,
                 "destination_latitude": req.destination_coordinate.latitude,
                 "destination_longitude": req.destination_coordinate.longitude,
             },
         )
+
+
+        conn.execute(
+            text(
+                "UPDATE chairs SET is_active = False WHERE id = :chair_id"
+            ),
+            {
+                "chair_id": matched.id,
+            },
+        )
+
 
         conn.execute(
             text(
@@ -484,7 +518,7 @@ def app_post_ride_evaluation(
             )
 
         result = conn.execute(
-            text("UPDATE rides SET evaluation = :evaluation WHERE id = :id"),
+            text("UPDATE rides SET evaluation = :evaluation, is_active = True WHERE id = :id"),
             {"evaluation": req.evaluation, "id": ride_id},
         )
         if result.rowcount == 0:
