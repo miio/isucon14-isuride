@@ -604,6 +604,14 @@ def app_post_ride_evaluation(
                 raise HTTPException(
                     status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
                 )
+            result = conn.execute(
+                text("UPDATE rides SET chair_id = NULL WHERE id = :id"),
+                {"id": ride.id},
+            )
+            if result.rowcount == 0:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
+                )
         except UpstreamError as e:
             raise HTTPException(status_code=HTTPStatus.BAD_GATEWAY, detail=str(e))
 
