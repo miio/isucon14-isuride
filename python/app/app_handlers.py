@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from ulid import ULID
+import time
 
 from .middlewares import app_auth_middleware
 from .models import (
@@ -308,7 +309,7 @@ def app_post_rides(
         while True:
             matched: Chair | None = None
             row = conn.execute(
-                    text("SELECT chairs.* FROM chairs INNER JOIN chair_locations ON chair_locations.chair_id = chairs.id LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active = True ORDER BY SQRT (pow(:pick_latitude - chair_locations.latitude, 2) + pow(:pick_longitude - chair_locations.longitude,2)) ASC,  SQRT (pow(chair_locations.latitude - :dest_latitude, 2) + pow(chair_locations.latitude - :dest_longitude, 2))ASC LIMIT 1"
+                    text("SELECT chairs.* FROM chairs INNER JOIN chair_locations ON chair_locations.chair_id = chairs.id LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active = True AND subdate(now(),interval 1 second) > chairs.updated_at ORDER BY SQRT (pow(:pick_latitude - chair_locations.latitude, 2) + pow(:pick_longitude - chair_locations.longitude,2)) ASC,  SQRT (pow(chair_locations.latitude - :dest_latitude, 2) + pow(chair_locations.latitude - :dest_longitude, 2))ASC LIMIT 1"
                 ), 
                 {
                     "pick_latitude": req.pickup_coordinate.latitude,
@@ -534,14 +535,6 @@ def app_post_ride_evaluation(
             raise HTTPException(
                 status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
             )
-        result = conn.execute(
-            text("UPDATE chairs SET is_active = True WHERE id = :id"),
-            {"id": ride.chair_id},
-        )
-        if result.rowcount == 0:
-            raise HTTPException(
-                status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
-            )
 
         conn.execute(
             text(
@@ -603,6 +596,14 @@ def app_post_ride_evaluation(
                 payment_gateway_request,
                 retrieve_rides_order_by_created_at_asc,
             )
+            result = conn.execute(
+                text("UPDATE chairs SET is_active = True WHERE id = :id"),
+                {"id": ride.chair_id},
+            )
+            if result.rowcount == 0:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
+                )
         except UpstreamError as e:
             raise HTTPException(status_code=HTTPStatus.BAD_GATEWAY, detail=str(e))
 
