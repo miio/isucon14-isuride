@@ -2,7 +2,7 @@ import os
 
 import sqlalchemy
 
-host = os.getenv("ISUCON_DB_HOST", "127.0.0.1")
+host = os.getenv("ISUCON_DB_HOST", "192.168.0.11")
 port = int(os.getenv("ISUCON_DB_PORT", "3306"))
 user = os.getenv("ISUCON_DB_USER", "isucon")
 password = os.getenv("ISUCON_DB_PASSWORD", "isucon")

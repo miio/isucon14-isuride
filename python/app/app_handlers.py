@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from ulid import ULID
+import time
 
 from .middlewares import app_auth_middleware
 from .models import (
@@ -290,7 +291,7 @@ def app_post_rides(
     ride_id = str(ULID())
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT * FROM rides WHERE user_id = :user_id"), {"user_id": user.id}
+            text("SELECT * FROM rides WHERE user_id = :user_id FOR UPDATE"), {"user_id": user.id}
         ).fetchall()
         rides = [Ride.model_validate(row) for row in rows]
 
@@ -305,19 +306,58 @@ def app_post_rides(
                 status_code=HTTPStatus.CONFLICT, detail="ride already exists"
             )
 
+        while True:
+            matched: Chair | None = None
+            row = conn.execute(
+                    text("SELECT chairs.* FROM chairs INNER JOIN chair_locations ON chair_locations.chair_id = chairs.id LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active = True AND subdate(now(),interval 1 second) > chairs.updated_at ORDER BY SQRT (pow(:pick_latitude - chair_locations.latitude, 2) + pow(:pick_longitude - chair_locations.longitude,2)) ASC,  SQRT (pow(chair_locations.latitude - :dest_latitude, 2) + pow(chair_locations.latitude - :dest_longitude, 2))ASC LIMIT 1"
+                ), 
+                {
+                    "pick_latitude": req.pickup_coordinate.latitude,
+                    "pick_longitude": req.pickup_coordinate.longitude,
+                    "dest_latitude": req.destination_coordinate.latitude,
+                    "dest_longitude": req.destination_coordinate.longitude,
+                }
+            ).fetchone()
+            if row is None:
+                continue
+            matched = Chair.model_validate(row)
+     
+            assert matched is not None
+            conn.execute(
+                text(
+                    "SELECT id FROM chairs WHERE id = :chair_id FOR UPDATE"
+                ),
+                {
+                    "chair_id": matched.id,
+                },
+            )
+            break
+
         conn.execute(
             text(
-                "INSERT INTO rides (id, user_id, pickup_latitude, pickup_longitude, destination_latitude, destination_longitude) VALUES (:id, :user_id, :pickup_latitude, :pickup_longitude, :destination_latitude, :destination_longitude)"
+                "INSERT INTO rides (id, user_id, chair_id,  pickup_latitude, pickup_longitude, destination_latitude, destination_longitude) VALUES (:id, :user_id, :chair_id, :pickup_latitude, :pickup_longitude, :destination_latitude, :destination_longitude)"
             ),
             {
                 "id": ride_id,
                 "user_id": user.id,
+                "chair_id": matched.id,
                 "pickup_latitude": req.pickup_coordinate.latitude,
                 "pickup_longitude": req.pickup_coordinate.longitude,
                 "destination_latitude": req.destination_coordinate.latitude,
                 "destination_longitude": req.destination_coordinate.longitude,
             },
         )
+
+
+        conn.execute(
+            text(
+                "UPDATE chairs SET is_active = False WHERE id = :chair_id"
+            ),
+            {
+                "chair_id": matched.id,
+            },
+        )
+
 
         conn.execute(
             text(
@@ -468,7 +508,7 @@ def app_post_ride_evaluation(
 
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT * FROM rides WHERE id = :ride_id"), {"ride_id": ride_id}
+            text("SELECT * FROM rides WHERE id = :ride_id FOR UPDATE"), {"ride_id": ride_id}
         ).fetchone()
 
         if row is None:
@@ -477,6 +517,10 @@ def app_post_ride_evaluation(
             )
         ride = Ride.model_validate(row)
         status = get_latest_ride_status(conn, ride.id)
+
+        row = conn.execute(
+            text("SELECT * FROM chairs WHERE id = :chair_id FOR UPDATE"), {"chair_id": ride.chair_id}
+        ).fetchone()
 
         if status != "ARRIVED":
             raise HTTPException(
@@ -552,6 +596,22 @@ def app_post_ride_evaluation(
                 payment_gateway_request,
                 retrieve_rides_order_by_created_at_asc,
             )
+            result = conn.execute(
+                text("UPDATE chairs SET is_active = True WHERE id = :id"),
+                {"id": ride.chair_id},
+            )
+            if result.rowcount == 0:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
+                )
+            result = conn.execute(
+                text("UPDATE rides SET chair_id = NULL WHERE id = :id"),
+                {"id": ride.id},
+            )
+            if result.rowcount == 0:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
+                )
         except UpstreamError as e:
             raise HTTPException(status_code=HTTPStatus.BAD_GATEWAY, detail=str(e))
 

@@ -63,7 +63,7 @@ def chair_post_chairs(
                 "owner_id": owner.id,
                 "name": req.name,
                 "model": req.model,
-                "is_active": False,
+                "is_active": True,
                 "access_token": access_token,
             },
         )
@@ -81,6 +81,7 @@ def chair_post_activity(
     chair: Annotated[Chair, Depends(chair_auth_middleware)],
     req: PostChairActivityRequest,
 ) -> None:
+    return
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE chairs SET is_active = :is_active WHERE id = :id"),
@@ -104,6 +105,7 @@ def chair_post_coordinate(
 ) -> ChairPostCoordinateResponse:
     with engine.begin() as conn:
         chair_location_id = str(ULID())
+
         conn.execute(
             text(
                 "INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (:id, :chair_id, :latitude, :longitude)"
@@ -196,6 +198,15 @@ def chair_get_notification(
 
         if row is None:
             return ChairGetNotificationResponse(data=None, retry_after_ms=30)
+        row = conn.execute(
+            text(
+                "SELECT * FROM rides WHERE chair_id = :chair_id ORDER BY updated_at DESC LIMIT 1 FOR UPDATE"
+            ),
+            {"chair_id": chair.id},
+        ).fetchone()
+
+        if row is None:
+            return ChairGetNotificationResponse(data=None, retry_after_ms=30)
 
         ride = Ride.model_validate(row)
         yet_sent_ride_status: RideStatus | None = None
@@ -214,7 +225,7 @@ def chair_get_notification(
             ride_status = yet_sent_ride_status.status
 
         row = conn.execute(
-            text("SELECT * FROM users WHERE id = :id FOR SHARE"), {"id": ride.user_id}
+            text("SELECT * FROM users WHERE id = :id"), {"id": ride.user_id}
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -256,7 +267,7 @@ def chair_post_ride_status(
 ) -> None:
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT * FROM rides WHERE id = :id FOR UPDATE"), {"id": ride_id}
+            text("SELECT * FROM rides WHERE id = :id LOCK IN SHARE MODE"), {"id": ride_id}
         ).fetchone()
         if row is None:
             raise HTTPException(
