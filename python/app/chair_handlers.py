@@ -198,6 +198,15 @@ def chair_get_notification(
 
         if row is None:
             return ChairGetNotificationResponse(data=None, retry_after_ms=30)
+        row = conn.execute(
+            text(
+                "SELECT * FROM rides WHERE chair_id = :chair_id ORDER BY updated_at DESC LIMIT 1 FOR UPDATE"
+            ),
+            {"chair_id": chair.id},
+        ).fetchone()
+
+        if row is None:
+            return ChairGetNotificationResponse(data=None, retry_after_ms=30)
 
         ride = Ride.model_validate(row)
         yet_sent_ride_status: RideStatus | None = None
@@ -242,7 +251,7 @@ def chair_get_notification(
             ),
             status=ride_status,
         ),
-        retry_after_ms=300,
+        retry_after_ms=30,
     )
 
 

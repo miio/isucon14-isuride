@@ -308,9 +308,14 @@ def app_post_rides(
         while True:
             matched: Chair | None = None
             row = conn.execute(
-                text(
-                    "SELECT chairs.* FROM chairs LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active"
-                )
+                    text("SELECT chairs.* FROM chairs INNER JOIN chair_locations ON chair_locations.chair_id = chairs.id LEFT JOIN rides ON rides.chair_id = chairs.id LEFT JOIN ride_statuses ON ride_statuses.ride_id = rides.id WHERE chairs.is_active = True ORDER BY SQRT (pow(:pick_latitude - chair_locations.latitude, 2) + pow(:pick_longitude - chair_locations.longitude,2)) ASC,  SQRT (pow(chair_locations.latitude - :dest_latitude, 2) + pow(chair_locations.latitude - :dest_longitude, 2))ASC LIMIT 1"
+                ), 
+                {
+                    "pick_latitude": req.pickup_coordinate.latitude,
+                    "pick_longitude": req.pickup_coordinate.longitude,
+                    "dest_latitude": req.destination_coordinate.latitude,
+                    "dest_longitude": req.destination_coordinate.longitude,
+                }
             ).fetchone()
             if row is None:
                 continue
@@ -502,7 +507,7 @@ def app_post_ride_evaluation(
 
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT * FROM rides WHERE id = :ride_id"), {"ride_id": ride_id}
+            text("SELECT * FROM rides WHERE id = :ride_id FOR UPDATE"), {"ride_id": ride_id}
         ).fetchone()
 
         if row is None:
@@ -512,14 +517,26 @@ def app_post_ride_evaluation(
         ride = Ride.model_validate(row)
         status = get_latest_ride_status(conn, ride.id)
 
+        row = conn.execute(
+            text("SELECT * FROM chairs WHERE id = :chair_id FOR UPDATE"), {"chair_id": ride.chair_id}
+        ).fetchone()
+
         if status != "ARRIVED":
             raise HTTPException(
                 status_code=HTTPStatus.BAD_REQUEST, detail="not arrived yet"
             )
 
         result = conn.execute(
-            text("UPDATE rides SET evaluation = :evaluation, is_active = True WHERE id = :id"),
+            text("UPDATE rides SET evaluation = :evaluation WHERE id = :id"),
             {"evaluation": req.evaluation, "id": ride_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND, detail="ride not found"
+            )
+        result = conn.execute(
+            text("UPDATE chairs SET is_active = True WHERE id = :id"),
+            {"id": ride.chair_id},
         )
         if result.rowcount == 0:
             raise HTTPException(
